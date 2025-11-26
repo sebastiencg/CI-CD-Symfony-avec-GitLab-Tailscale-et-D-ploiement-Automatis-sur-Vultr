@@ -1,103 +1,136 @@
-# CI-CD-Symfony-avec-GitLab-Tailscale-et-D-ploiement-Automatis-sur-Vultr
 
-Mise en place d’un pipeline CI/CD complet pour un projet Symfony avec GitLab, Tailscale et déploiement automatisé sur un serveur Vultr
+# CI/CD complet pour un projet Symfony avec GitLab, Tailscale et Vultr
 
-Dans ce projet, j’ai mis en place une chaîne CI/CD complète pour mon site portfolio Symfony. L’objectif était d’automatiser entièrement le processus de test, de validation, puis de déploiement sur un serveur de production isolé, tout en assurant un haut niveau de sécurité réseau.
+![status](https://img.shields.io/badge/status-production-green)
+![symfony](https://img.shields.io/badge/Symfony-7.x-black)
+![gitlab](https://img.shields.io/badge/GitLab-CI%2FCD-orange)
+![tailscale](https://img.shields.io/badge/Tailscale-Zero--Trust-blue)
+![php](https://img.shields.io/badge/PHP-8.3-777BB4)
+![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
-Ce travail a couvert plusieurs aspects :
+Ce dépôt documente la mise en place d’un pipeline CI/CD complet et sécurisé pour un projet Symfony,
+avec tests unitaires, déploiement automatisé, et infrastructure Zero-Trust grâce à Tailscale.
 
-intégration continue (CI) avec exécution des tests unitaires
+---
 
-déploiement continu (CD) automatisé via SSH
+## Table des matières
 
-sécurisation de l’infrastructure avec Tailscale
+1. [Architecture générale](#architecture-générale)
+2. [Intégration Continue (CI)](#1-intégration-continue-ci)  
+   1. [Image CI personnalisée](#11-image-ci-personnalisée)  
+   2. [Installation des dépendances & environnement test](#12-installation-des-dépendances--gestion-de-lenvironnement-test)  
+   3. [Correction des tests Symfony](#13-correction-des-tests-existants)  
+3. [Sécurisation réseau avec Tailscale](#2-sécurisation-via-tailscale)  
+   1. [Objectifs](#21-objectif)  
+   2. [Mise en réseau Zero-Trust](#22-mise-en-réseau-wireguard-zero-trust)  
+   3. [ACL Tailscale](#23-acl-tailscale)  
+4. [Déploiement Continu (CD)](#3-déploiement-continu-cd)  
+   1. [Méthode de déploiement](#31-méthode-de-déploiement)  
+   2. [Connexion SSH via Tailscale](#32-connexion-ssh-sécurisée)  
+   3. [Pipeline GitLab complet](#33-exemple-de-job-gitlab)  
+   4. [Gestion du cache Symfony](#34-gestion-du-cache-symfony)  
+5. [Résultats](#4-résultats)  
+6. [Conclusion](#conclusion)
 
-gestion fine des ACL pour isoler un serveur public (Vultr)
+---
 
-et résolution de plusieurs contraintes liées à Symfony, GitLab Runner et aux dépendances PHP.
+## Architecture générale
 
-Voici le déroulé complet de ce que j’ai mis en place.
+Schéma simplifié de l'infrastructure CI/CD :
 
-1. Mise en place de l’intégration continue (CI)
-1.1. Image CI personnalisée
+```text
+             ┌──────────────────────────────┐
+             │      Machine locale (DEV)    │
+             │    100.87.x.x (Tailscale)    │
+             └───────────────▲──────────────┘
+                             │
+                             │
+                  Tailscale Mesh VPN
+                             │
+                             ▼
+    ┌────────────────────────────────────────────┐
+    │         Serveur GitLab Auto-Hébergé        │
+    │       100.106.x.x (Tailscale)              │
+    │  - GitLab CI/CD                            │
+    │  - GitLab Runner                           │
+    └───────────────▲────────────────────────────┘
+                    │  SSH (via Tailscale)
+                    │  Zero-Trust Rule
+                    ▼
+    ┌────────────────────────────────────────────┐
+    │         Serveur Vultr (PRODUCTION)         │
+    │          100.85.x.x (Tailscale)            │
+    │  - Symfony en prod                         │
+    │  - Aucun port public ouvert                │
+    │  - Accès uniquement depuis GitLab          │
+    └────────────────────────────────────────────┘
+````
 
-J’ai commencé par configurer GitLab CI avec une image Docker basée sur PHP 8.3.
-J'y ai ajouté les extensions requises par Symfony et Doctrine (intl, pdo_sqlite…).
+---
 
-1.2. Installation des dépendances & gestion des environnements
+## 1. Intégration Continue (CI)
 
-J’ai configuré l’étape de test pour :
+### 1.1. Image CI personnalisée
 
-installer Composer
+Une image Docker custom basée sur **PHP 8.3** est utilisée avec :
 
-installer les dépendances du projet
+* `intl`
+* `pdo_sqlite`
+* `zip`
+* autres extensions nécessaires à Symfony
 
-utiliser une base SQLite en mémoire pour les tests
+### 1.2. Installation des dépendances & gestion de l'environnement test
 
-générer le schéma Doctrine pour l’environnement test
+La CI :
 
-et lancer PHPUnit
+* installe Composer
+* installe les dépendances
+* crée une base SQLite en mémoire
+* génère le schéma Doctrine
+* exécute PHPUnit
 
-Cette étape garantit que chaque commit est testé automatiquement avant d’être accepté.
+Cela garantit des tests reproductibles à chaque commit.
 
-1.3. Correction des tests existants
+### 1.3. Correction des tests existants
 
-Les tests fournis par défaut par Symfony n’étaient plus valides, notamment à cause de changements dans les routes (préfixes /admin/post) et des règles de sécurité (redirection vers /login).
-J’ai donc adapté les URLs utilisées dans les tests pour les aligner sur l’application actuelle.
+Les tests de base Symfony échouaient (routes modifiées, redirections `/login`).
+Les URLs ont été mises à jour pour refléter l’état actuel de l’application.
 
-Résultat : les tests unitaires passent désormais systématiquement lors de chaque pipeline.
+---
 
-2. Mise en place de Tailscale pour sécuriser la chaîne CI/CD
-2.1. Objectif sécurité
+## 2. Sécurisation via Tailscale
 
-Mon GitLab est auto-hébergé et accessible via un tunnel Cloudflare.
-En revanche, mon serveur de production Vultr est exposé publiquement et n’a pas accès au réseau interne.
+### 2.1. Objectif
 
-Je voulais :
+* GitLab doit déployer vers Vultr
+* Aucun port ne doit être ouvert
+* Vultr doit être totalement isolé
+* Sécurité "Zero-Trust"
 
-que GitLab Runner puisse déployer vers Vultr,
+### 2.2. Mise en réseau WireGuard Zero-Trust
 
-sans ouvrir de ports publics,
+| Machine            | Adresse Tailscale | Rôle          |
+| ------------------ | ----------------- | ------------- |
+| serveur-principale | 100.106.x.x       | GitLab        |
+| PC                 | 100.87.x.x        | Développement |
+| Vultr              | 100.85.x.x        | Production    |
 
-et en isolant Vultr des autres machines du réseau VPN.
+### 2.3. ACL Tailscale
 
-2.2. Mise en réseau Zero-Trust avec Tailscale
+Extrait d’ACL :
 
-J’ai intégré tous les serveurs dans un réseau privé VPN WireGuard grâce à Tailscale.
-
-Trois machines sont concernées :
-
-Machine	Adresse Tailscale	Rôle
-serveur-principale	100.106.x.x	GitLab auto-hébergé
-PC (développement)	100.87.x.x	Machine de travail
-Vultr	100.85.x.x	Serveur de production
-2.3. Mise en place des ACL Tailscale
-
-J’ai configuré une règle Zero-Trust stricte :
-
-seule GitLab peut communiquer avec le serveur Vultr
-
-Vultr ne peut communiquer avec rien d’autre
-
-aucune autre machine du réseau n’a accès à Vultr
-
-tout le reste du réseau fonctionne normalement
-
-Exemple d’ACL simplifiée utilisée :
-
+```json
 {
   "tagOwners": {
-    "tag:vultr": ["autogroup:admin"]
+    "tag:tag": ["autogroup:admin"]
   },
-
   "grants": [
     {
-      "src": ["100.106.224.109"], 
-      "dst": ["tag:vultr"],
+      "src": ["100.106.xx.xx"],
+      "dst": ["tag:tag"],
       "ip": ["*"]
     }
   ],
-
   "ssh": [
     {
       "action": "check",
@@ -107,44 +140,37 @@ Exemple d’ACL simplifiée utilisée :
     }
   ]
 }
+```
 
+**Effet :**
 
-Résultat :
-➡️ Vultr est totalement isolé, accessible uniquement par GitLab pour le déploiement.
-➡️ Sécurité réseau maximale sans ouvrir le moindre port au public.
+* GitLab → Vultr : autorisé
+* Toute autre machine → Vultr : interdit
+* Vultr → monde extérieur : interdit
 
-3. Mise en place du déploiement continu (CD)
-3.1. Méthode retenue
+---
 
-J’ai choisi un déploiement en SSH via GitLab Runner :
+## 3. Déploiement Continu (CD)
 
-GitLab exécute les tests
+### 3.1. Méthode de déploiement
 
-Si tout est OK, GitLab ouvre une session SSH vers Vultr
+1. GitLab exécute les tests.
+2. Si OK : SSH via Tailscale vers Vultr.
+3. Mise à jour du dépôt Git.
+4. Installation Composer optimisée.
+5. Mise à jour Doctrine.
+6. Clear cache Symfony.
+7. Correction des permissions.
 
-Vultr récupère la dernière version du code depuis GitLab
+### 3.2. Connexion SSH sécurisée
 
-Symfony reconstruit le cache et met à jour le schéma Doctrine
+* Clé privée : stockée dans GitLab.
+* Clé publique : dans `~/.ssh/authorized_keys` sur Vultr.
+* Pas d’ouverture de port (SSH Tailscale uniquement).
 
-Droits corrigés sur var/ pour permettre l’écriture par PHP-FPM
+### 3.3. Exemple de job GitLab
 
-3.2. Déploiement sécurisé avec clés SSH
-
-J’ai créé une clé privée que GitLab utilise pour se connecter à Vultr.
-La clé publique a été installée dans ~/.ssh/authorized_keys du serveur Vultr.
-
-Là encore : aucune ouverture de port supplémentaire, tout passe via Tailscale.
-
-3.3. Pipeline GitLab complet
-
-Le pipeline final comporte ces étapes :
-
-test (CI)
-
-deploy_production (CD)
-
-Et utilise cette structure :
-
+```yaml
 deploy_production:
   stage: deploy
   only:
@@ -164,60 +190,42 @@ deploy_production:
 
         chown -R www-data:www-data var;
       "
+```
 
-3.4. Gestion du cache Symfony en production
+### 3.4. Gestion du cache Symfony
 
-Lors des premiers déploiements, Symfony affichait :
+Erreur rencontrée :
 
+```text
 Unable to write in the cache directory (...)
-
-
-Ce problème venait du fait que le cache était créé par root pendant le déploiement.
+```
 
 Solution :
-➡️ Ajout automatique d’un chown -R www-data:www-data var/ dans le script.
 
-4. Résultat final
+```bash
+chown -R www-data:www-data var/
+```
 
-Grâce à toute cette chaîne CI/CD :
+---
 
-✔️ Chaque commit est testé automatiquement
+## 4. Résultats
 
-Tests unitaires exécutés via SQLite en environnement isolé.
+* Tests unitaires automatiques
+* Déploiement instantané sur `main`
+* Vultr totalement isolé via Zero-Trust
+* Aucune exposition réseau
+* Gestion propre des dépendances et du cache
+* Déploiement 100% automatisé, sans intervention humaine
 
-✔️ Déploiement automatique en production dès que la branche main est mise à jour
+---
 
-GitLab se charge du git fetch, de l’installation, du cache, et de la migration.
+## Conclusion
 
-✔️ Vultr est protégé dans un environnement Zero-Trust
+Cette stack CI/CD fournit :
 
-Aucun port ouvert.
-Accessible uniquement via Tailscale par mon GitLab.
+* une infrastructure sécurisée et automatisée
+* un déploiement reproductible, rapide et fiable
+* un réseau Zero-Trust
+* une intégration propre avec Symfony et GitLab
 
-✔️ Gestion propre des dépendances, cache et droit fichiers Symfony
-
-Le site reste stable et opérationnel à chaque déploiement.
-
-✔️ Plus aucune intervention manuelle sur le serveur
-
-Le déploiement est fiable, reproductible et sécurisé.
-
-Conclusion
-
-Ce projet m’a permis de mettre en place une stack CI/CD professionnelle complète autour de Symfony :
-
-orchestration GitLab CI/CD
-
-Test Unitaires automatisés
-
-Zero-Trust Networking avec Tailscale
-
-ACL avancées pour isoler les serveurs sensibles
-
-Déploiement sécurisé en SSH sans aucune exposition réseau
-
-Pipeline propre, robuste et maintenable
-
-Résolution des contraintes Symfony (cache, migrations, droits, extensions PHP)
-
-C’est désormais une infrastructure solide, sécurisée, automatisée et scalable, que je peux réutiliser sur d’autres projets (Symfony, Node, ou autres).
+Cette architecture est réutilisable pour tout projet Symfony, Node.js, ou autres.
